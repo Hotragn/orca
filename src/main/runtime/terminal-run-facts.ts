@@ -26,32 +26,48 @@ const BRACKETED_PASTE_START = '\x1b[200~'
 const BRACKETED_PASTE_END = '\x1b[201~'
 const KITTY_ENTER = '\x1b[13u'
 
-export type ComposerDraftState = { draft: boolean; inPaste: boolean }
+const MAX_PENDING_ESCAPE_LENGTH = 16
 
-/** CSI runs to its final byte; SS3 and Alt+key are ESC plus one or two characters. */
-function escapeSequenceEnd(data: string, start: number): number {
+/** `pendingEscape` holds a CSI or SS3 sequence a write cut off, so the next write completes it. */
+export type ComposerDraftState = { draft: boolean; inPaste: boolean; pendingEscape: string }
+
+/** CSI runs to its final byte; SS3 and Alt+key are ESC plus one or two characters. Null means the
+ *  data ends inside a CSI or SS3 sequence. */
+function escapeSequenceEnd(data: string, start: number): number | null {
   const introducer = data[start + 1]
   if (introducer === '[') {
-    let index = start + 2
-    while (
-      index < data.length &&
-      (data.charCodeAt(index) < 0x40 || data.charCodeAt(index) > 0x7e)
-    ) {
-      index += 1
+    for (let index = start + 2; index < data.length; index += 1) {
+      const code = data.charCodeAt(index)
+      if (code >= 0x40 && code <= 0x7e) {
+        return index + 1
+      }
     }
-    return Math.min(index + 1, data.length)
+    return null
   }
-  return Math.min(start + (introducer === 'O' ? 3 : 2), data.length)
+  if (introducer === 'O') {
+    return start + 3 <= data.length ? start + 3 : null
+  }
+  // Why: a lone ESC that ends a write is the Esc key, which a terminal sends as its own write.
+  return Math.min(start + 2, data.length)
 }
 
 /** Walks input the way an agent's composer sees it: typed or pasted text leaves a draft, Enter or
  *  Ctrl+C sends or clears it, and keys such as arrows, Esc or Shift+Enter (ESC CR) change neither. */
-function advanceComposerDraft(state: ComposerDraftState, data: string): ComposerDraftState {
+function advanceComposerDraft(state: ComposerDraftState, input: string): ComposerDraftState {
   let { draft, inPaste } = state
+  const data = state.pendingEscape + input
   for (let index = 0; index < data.length; index += 1) {
     const char = data[index]
     if (char === '\x1b') {
       const end = escapeSequenceEnd(data, index)
+      if (end === null) {
+        const rest = data.slice(index)
+        return {
+          draft,
+          inPaste,
+          pendingEscape: rest.length <= MAX_PENDING_ESCAPE_LENGTH ? rest : ''
+        }
+      }
       const sequence = data.slice(index, end)
       if (sequence === BRACKETED_PASTE_START) {
         inPaste = true
@@ -69,7 +85,7 @@ function advanceComposerDraft(state: ComposerDraftState, data: string): Composer
       draft = true
     }
   }
-  return { draft, inPaste }
+  return { draft, inPaste, pendingEscape: '' }
 }
 
 export type TerminalSpawnCommit = Parameters<typeof spawnCommitBindingOrigin>[0] & {
@@ -103,12 +119,14 @@ export class TerminalRunFactsRegister {
       return
     }
     const prior = this.pendingByPtyId.get(commit.id)
+    const keepsPriorInput =
+      prior?.incarnationId === null || prior?.incarnationId === commit.incarnationId
+    if (!keepsPriorInput) {
+      this.composerDraftByPtyId.delete(commit.id)
+    }
     this.pendingByPtyId.set(commit.id, {
       incarnationId: commit.incarnationId,
-      firstInputAt:
-        prior?.incarnationId === null || prior?.incarnationId === commit.incarnationId
-          ? prior.firstInputAt
-          : null
+      firstInputAt: keepsPriorInput ? prior.firstInputAt : null
     })
   }
 
@@ -133,7 +151,10 @@ export class TerminalRunFactsRegister {
       origin === 'reattach' && (incarnationId === null || !previous?.incarnationId)
     if (!sameProcess) {
       this.lastInputAtByPtyId.delete(commit.id)
-      this.composerDraftByPtyId.delete(commit.id)
+      // Why: input recorded before this commit for the same incarnation was typed into this process.
+      if (pending?.incarnationId !== incarnationId) {
+        this.composerDraftByPtyId.delete(commit.id)
+      }
     }
     this.runsByPtyId.set(commit.id, {
       incarnationId,
@@ -157,7 +178,7 @@ export class TerminalRunFactsRegister {
     this.composerDraftByPtyId.set(
       ptyId,
       advanceComposerDraft(
-        this.composerDraftByPtyId.get(ptyId) ?? { draft: false, inPaste: false },
+        this.composerDraftByPtyId.get(ptyId) ?? { draft: false, inPaste: false, pendingEscape: '' },
         data
       )
     )

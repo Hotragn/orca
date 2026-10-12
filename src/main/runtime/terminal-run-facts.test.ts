@@ -178,6 +178,37 @@ describe('terminal run facts', () => {
     expect(facts.hasUnsubmittedInput('pty-2')).toBe(false)
   })
 
+  it('reads a paste marker or key that one write cut in two', () => {
+    const facts = new TerminalRunFactsRegister()
+    facts.recordInput('pty-1', 'driving', '\x1b[200')
+    facts.recordInput('pty-1', 'driving', '~pasted\r')
+    facts.recordInput('pty-1', 'driving', 'more\r\x1b[20')
+    facts.recordInput('pty-1', 'driving', '1~')
+    expect(facts.hasUnsubmittedInput('pty-1')).toBe(true)
+    facts.recordInput('pty-1', 'driving', '\r')
+    expect(facts.hasUnsubmittedInput('pty-1')).toBe(false)
+
+    facts.recordInput('pty-2', 'driving', '\x1b[')
+    facts.recordInput('pty-2', 'driving', 'A')
+    expect(facts.hasUnsubmittedInput('pty-2')).toBe(false)
+
+    facts.recordInput('pty-3', 'driving', '\x1b')
+    facts.recordInput('pty-3', 'driving', 'a')
+    expect(facts.hasUnsubmittedInput('pty-3')).toBe(true)
+  })
+
+  it('keeps a draft typed before its own process was committed', () => {
+    const facts = new TerminalRunFactsRegister()
+    facts.recordSpawnCommit({ id: 'pty-1', incarnationId: 'inc-1' })
+    facts.recordInput('pty-1', 'driving', 'old draft')
+    facts.reserveSpawnCommit({ id: 'pty-1', incarnationId: 'inc-2' })
+    expect(facts.hasUnsubmittedInput('pty-1')).toBe(false)
+
+    facts.recordInput('pty-1', 'launch', 'startup draft')
+    facts.recordSpawnCommit({ id: 'pty-1', incarnationId: 'inc-2' })
+    expect(facts.hasUnsubmittedInput('pty-1')).toBe(true)
+  })
+
   it('drops a draft when a new process replaces the pane', () => {
     const facts = new TerminalRunFactsRegister()
     facts.recordSpawnCommit({ id: 'pty-1', incarnationId: 'inc-1' })
