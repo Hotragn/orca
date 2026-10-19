@@ -11,19 +11,23 @@ import type { Repo } from '../../shared/repo-types'
 import { folderWorkspaceKey, parseWorkspaceKey } from '../../shared/workspace-scope'
 import { splitWorktreeId } from '../../shared/worktree/id'
 import {
+  PREFLIGHT_OTHER_RUNTIME_REFUSAL_RUNTIME_CAPABILITY,
+  RUNTIME_CAPABILITIES,
+  WORKSPACE_ON_OTHER_RUNTIME
+} from '../../shared/protocol-version'
+import {
   resolveWorkspaceAgentDetectionHost,
   type WorkspaceAgentDetectionStore
 } from './workspace-agent-detection'
+import { _resetWslCachesForTests, _setWslCachesForTests } from '../wsl'
 
-const { detectInstalledMock, detectRemoteMock, refreshMock } = vi.hoisted(() => ({
+const { detectInstalledMock, refreshMock } = vi.hoisted(() => ({
   detectInstalledMock: vi.fn(),
-  detectRemoteMock: vi.fn(),
   refreshMock: vi.fn()
 }))
 
 vi.mock('./agent-detection', () => ({
   detectInstalledAgentsWithShellPathHydration: detectInstalledMock,
-  detectRemoteAgents: detectRemoteMock,
   refreshShellPathAndDetectAgents: refreshMock,
   detectRemoteWindowsTerminalCapabilities: vi.fn(),
   runPreflightCheck: vi.fn()
@@ -135,6 +139,7 @@ describe('resolveWorkspaceAgentDetectionHost on a Windows host', () => {
   })
   afterEach(() => {
     Object.defineProperty(process, 'platform', { value: originalPlatform })
+    _resetWslCachesForTests()
   })
 
   it('keeps the host default for a workspace no repo row owns', () => {
@@ -169,6 +174,16 @@ describe('resolveWorkspaceAgentDetectionHost on a Windows host', () => {
   })
 
   it('probes inside the distro of a WSL-share workspace with no saved runtime', () => {
+    const s = store({ repos: [repo({ id: 'r1', path: WSL_REPO_PATH })] })
+    expect(resolveFor(s, `r1::${WSL_REPO_PATH}`)).toEqual({
+      kind: 'local',
+      context: wslContext('Ubuntu-24.04', 'r1', 'project-override')
+    })
+  })
+
+  // A `\\wsl$` path proves its distro exists, and the cached list can be stale.
+  it("trusts a WSL-share workspace's distro over a stale cached list", () => {
+    _setWslCachesForTests({ available: true, distros: ['Debian'] })
     const s = store({ repos: [repo({ id: 'r1', path: WSL_REPO_PATH })] })
     expect(resolveFor(s, `r1::${WSL_REPO_PATH}`)).toEqual({
       kind: 'local',
@@ -232,6 +247,24 @@ describe('resolveWorkspaceAgentDetectionHost on a Windows host', () => {
       context: wslContext('Ubuntu-24.04', 'r1', 'project-override')
     })
   })
+  // The agent list reads the folder's own host, as main does; only launches also read its group's.
+  it("keeps a folder's repo runtime when only its group names another host", () => {
+    _setWslCachesForTests({ available: true, distros: ['Ubuntu'] })
+    const s = store({
+      repos: [
+        repo({ id: 'r1', path: 'C:\\src\\r1', executionHostId: 'local', projectGroupId: 'g1' })
+      ],
+      projects: [project('p1', ['r1'], { kind: 'wsl', distro: 'Ubuntu' })],
+      projectGroups: [{ ...GROUP, executionHostId: 'runtime:paired' }],
+      folderWorkspaces: [{ ...FOLDER, folderPath: 'C:\\work' }]
+    })
+    expect(resolveFor(s, folderWorkspaceKey('f1'))).toMatchObject({
+      kind: 'local',
+      context: {
+        projectRuntime: { status: 'resolved', runtime: { kind: 'wsl', distro: 'Ubuntu' } }
+      }
+    })
+  })
   it('refuses a folder whose candidate repos live on different SSH hosts', () => {
     const s = store({
       repos: [
@@ -244,6 +277,25 @@ describe('resolveWorkspaceAgentDetectionHost on a Windows host', () => {
     expect(() => resolveFor(s, folderWorkspaceKey('f1'))).toThrow(
       'worktree_execution_host_unresolved'
     )
+  })
+  it('#13752: refuses a worktree or folder another runtime owns instead of probing here', () => {
+    const s = store({
+      repos: [
+        repo({ id: 'r1', path: '/srv/r1', executionHostId: 'runtime:env-b' }),
+        repo({
+          id: 'r2',
+          path: '/srv/r2',
+          executionHostId: 'runtime:env-b',
+          connectionId: 'b-ssh',
+          projectGroupId: 'g1'
+        })
+      ],
+      projectGroups: [GROUP],
+      folderWorkspaces: [{ ...FOLDER, folderPath: '/srv', executionHostId: 'runtime:env-b' }]
+    })
+    expect(() => resolveFor(s, 'r1::/srv/r1')).toThrow(WORKSPACE_ON_OTHER_RUNTIME)
+    expect(() => resolveFor(s, 'r2::/srv/r2')).toThrow(WORKSPACE_ON_OTHER_RUNTIME)
+    expect(() => resolveFor(s, folderWorkspaceKey('f1'))).toThrow(WORKSPACE_ON_OTHER_RUNTIME)
   })
 })
 
@@ -295,5 +347,21 @@ describe('preflight.detectAgents resolves the workspace on the host', () => {
       params: { worktreeId: 'r1::C:\\src\\r1' }
     })
     expect(refreshMock).toHaveBeenCalledWith(wslContext('Ubuntu', 'p1', 'global-default'))
+  })
+
+  it('#13752: a paired client naming a workspace another runtime owns gets a refusal', async () => {
+    const dispatcher = dispatcherFor(
+      store({ repos: [repo({ id: 'r1', path: '/srv/r1', executionHostId: 'runtime:env-b' })] })
+    )
+    const response = await dispatcher.dispatch({
+      id: '1',
+      authToken: 't',
+      method: 'preflight.detectAgents',
+      params: { worktreeId: 'r1::/srv/r1' }
+    })
+    expect(detectInstalledMock).not.toHaveBeenCalled()
+    expect(response).toMatchObject({ ok: false, error: { message: WORKSPACE_ON_OTHER_RUNTIME } })
+    // Clients let a host decide a shared repo id only when it advertises this refusal.
+    expect(RUNTIME_CAPABILITIES).toContain(PREFLIGHT_OTHER_RUNTIME_REFUSAL_RUNTIME_CAPABILITY)
   })
 })
