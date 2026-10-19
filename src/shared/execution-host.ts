@@ -10,6 +10,14 @@ export type ExecutionHostId = typeof LOCAL_EXECUTION_HOST_ID | `ssh:${string}` |
 
 export type ExecutionHostScope = typeof ALL_EXECUTION_HOSTS_SCOPE | ExecutionHostId
 
+/** Whether work at this location runs natively on this machine, in a folder this process can read. */
+export function isNativeLocalLocation(location: {
+  executionHostId: string
+  wslDistro: string | null
+}): boolean {
+  return location.executionHostId === LOCAL_EXECUTION_HOST_ID && location.wslDistro === null
+}
+
 export type ParsedExecutionHost =
   | { kind: 'local'; id: typeof LOCAL_EXECUTION_HOST_ID }
   | { kind: 'ssh'; id: `ssh:${string}`; targetId: string }
@@ -45,9 +53,9 @@ export function getLocalExecutionHostLabel(platform: NodeJS.Platform | null = nu
   return 'This computer'
 }
 
-function normalizeHostPart(value: string | null | undefined): string | null {
-  const trimmed = value?.trim()
-  return trimmed ? trimmed : null
+/** Trims a stored id; blank is absent, since no write path normalizes it. */
+export function normalizeHostPart(value: string | null | undefined): string | null {
+  return value?.trim() || null
 }
 
 export function toSshExecutionHostId(targetId: string): `ssh:${string}` {
@@ -116,6 +124,15 @@ export function parseExecutionHostId(value: string | null | undefined): ParsedEx
     }
   }
   return null
+}
+
+/** Whether a host id names another machine; an absent or unparsable id reads as this one. */
+export function isLocalExecutionHost(value: string | null | undefined): boolean {
+  return parseExecutionHostId(value)?.kind === 'local'
+}
+
+export function isRemoteExecutionHostId(value: string | null | undefined): boolean {
+  return (parseExecutionHostId(value)?.kind ?? 'local') !== 'local'
 }
 
 /**
@@ -193,6 +210,21 @@ export function getRepoExecutionHostId(repo: {
   return getConnectionExecutionHostId(normalizeHostPart(repo.connectionId))
 }
 
+/**
+ * Whether a row's files are on the machine whose catalog holds it. Strict: an unknown host id or a
+ * stale `connectionId` beside `local` reads as elsewhere, so it never matches a local checkout.
+ */
+export function isRepoOnCatalogHost(repo: {
+  connectionId?: string | null
+  executionHostId?: string | null
+}): boolean {
+  const executionHostId = normalizeHostPart(repo.executionHostId)
+  return (
+    (executionHostId === null || executionHostId === LOCAL_EXECUTION_HOST_ID) &&
+    normalizeHostPart(repo.connectionId) === null
+  )
+}
+
 export function getSshTargetIdForExecutionHost(
   executionHostId: string | null | undefined
 ): string | null {
@@ -212,7 +244,7 @@ export function getSshTargetIdForExecutionHost(
 //     `contradictory`. Answering with it hands out an SSH connection for a row that declares
 //     itself local.
 //   - `runtime:<env>` is a different machine with its own SSH targets, and a nested one appears
-//     only in this field (`repoWithFetchedOwner` spreads it through). It is not dialable on its
+//     only in this field (`adoptFromEndpoint` spreads it through). It is not dialable on its
 //     own, but it is addressable as the pair (environmentId, targetId) — which is how the
 //     renderer reads it, recovering the environment from the worktree and looking the target up
 //     inside it (`selectRuntimeAwareSshStatus`). Dropping it makes a nested-SSH workspace read

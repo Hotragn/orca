@@ -12,8 +12,8 @@ import { useAgentDetectionTargetForWorktree } from '@/hooks/useAgentDetectionTar
 import { getConnectionIdFromState } from '@/lib/connection-context'
 import { getLocalProjectExecutionRuntimeContext } from '@/lib/local-preflight-context'
 import { isNativeChatTranscriptLocalReadable } from '@/lib/native-chat-transcript-readability'
-import { getRuntimeEnvironmentIdForWorktree } from '@/lib/worktree-runtime-owner'
-import { getActiveRuntimeTarget } from '@/runtime/runtime-rpc-client'
+import { runtimeEnvironmentIdWithLegacyFallbackUnlessTwin } from '@/lib/worktree-runtime-owner'
+import { runtimeTargetForOwnerEnvironment } from '@/runtime/runtime-client-target'
 import { useOptionalShortcutLabel, useShortcutLabel } from '@/hooks/useShortcutLabel'
 import {
   getWindowsTerminalCapabilityOwnerKey,
@@ -128,8 +128,8 @@ export function useTabBarRuntimeModel({
   const activeWorktreeId = useAppStore((s) => s.activeWorktreeId)
   const settings = useAppStore((s) => s.settings)
   // Why: use the worktree's owning host so offered Windows shells match the host that actually runs the terminal.
-  const activeRuntimeEnvironmentId = useAppStore(
-    (s) => getRuntimeEnvironmentIdForWorktree(s, worktreeId)?.trim() || null
+  const activeRuntimeEnvironmentId = useAppStore((s) =>
+    runtimeEnvironmentIdWithLegacyFallbackUnlessTwin(s, worktreeId)
   )
   // Why: retained tab strips rerun selectors on every store write; reuse canonical indexes, don't flatten both slices here.
   const worktreeConnectionId = useAppStore(
@@ -164,7 +164,7 @@ export function useTabBarRuntimeModel({
     worktreeConnectionId
   )
   const runtimeTarget = useMemo(
-    () => getActiveRuntimeTarget({ activeRuntimeEnvironmentId }),
+    () => runtimeTargetForOwnerEnvironment(activeRuntimeEnvironmentId),
     [activeRuntimeEnvironmentId]
   )
   const shouldProbeWindowsShellCapabilities =

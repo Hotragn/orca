@@ -3,7 +3,7 @@ import type {
   OrcadManagedPendingMigrationRow,
   OrcadManagedRuntimeStatus
 } from '../../../../shared/orcad-managed-runtime'
-import type { OrcadMigrationBlocker } from '../../../../shared/orcad-migration-preflight'
+import type { OrcadMigrationBlocker } from '../../../../shared/orcad-migration/orcad-migration-preflight'
 import { translate } from '@/i18n/i18n'
 import { dependencyKindLabel } from './managed-server-dependency-kinds'
 
@@ -144,7 +144,7 @@ export function managedServerOutcomeLabel(result: {
   if (code === 'orcad_stop_active_environment') {
     return translate(
       'auto.components.settings.managedServers.outcome.activeServer',
-      'Not done: choose another Active Server in Advanced before stopping this server.'
+      'Not done: this server is the default host for new projects. Choose another one in Advanced before stopping it.'
     )
   }
   if (result.verdict === 'live' || LIVE_TERMINAL_CODES.has(code)) {

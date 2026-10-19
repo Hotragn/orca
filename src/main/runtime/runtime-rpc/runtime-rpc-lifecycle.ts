@@ -3,7 +3,7 @@ import type { RuntimeTransportMetadata } from '../../../shared/runtime-bootstrap
 import { watchRuntimeMetadataOwnership } from '../runtime-metadata-ownership-watch'
 import type { RpcTransport } from '../rpc/transport'
 import { UnixSocketTransport } from '../rpc/unix-socket-transport'
-import { WebSocketTransport } from '../rpc/ws-transport'
+import { PinnedPortUnavailableError, WebSocketTransport } from '../rpc/ws-transport'
 import {
   clearWsFallbackPort,
   readWsFallbackPort,
@@ -25,6 +25,7 @@ import {
   sweepOrphanedRuntimeSockets
 } from './runtime-rpc-socket-metadata'
 import { errorMessage } from '../../../shared/error-message'
+import { loadHostDescriptor, publishHostDescriptor } from '../host-descriptor'
 
 export class RuntimeRpcLifecycle extends RuntimeRpcWebSocketDispatch {
   async start(): Promise<void> {
@@ -90,12 +91,15 @@ export class RuntimeRpcLifecycle extends RuntimeRpcWebSocketDispatch {
         this.deviceRegistry = pairingIdentity.deviceRegistry
         this.e2eeKeypair = pairingIdentity.e2eeKeypair
         this.pairingInitializationFailure = null
+        this.hostDescriptor = await loadHostDescriptor(this.userDataPath)
+        publishHostDescriptor(this.runtime.getRuntimeId(), this.hostDescriptor)
         try {
           const host = this.resolveInitialWebSocketBindHost()
           const { transport, endpoint } = await this.startWebSocketTransport({
             host,
             port: this.wsPort,
             preferPinnedPort: this.preferPinnedWsPort,
+            requirePinnedPort: this.requirePinnedWsPort,
             // Why: stable fallback port across restarts keeps paired devices' endpoints valid (STA-1511); wsPort 0 = random (E2E).
             ...(this.wsPort !== 0 ? { fallbackPort: readWsFallbackPort(this.userDataPath) } : {})
           })
@@ -109,7 +113,12 @@ export class RuntimeRpcLifecycle extends RuntimeRpcWebSocketDispatch {
         } catch (error) {
           // Why: WebSocket transport is supplementary; on failure (e.g. port in use) continue with Unix socket only.
           console.error('[runtime] Failed to start WebSocket transport:', error)
+          this.mobileSocketWiring?.dispose()
           this.mobileSocketWiring = null
+          if (error instanceof PinnedPortUnavailableError) {
+            await socketTransport.stop().catch(() => {})
+            throw error
+          }
         }
       }
     }
@@ -172,6 +181,7 @@ export class RuntimeRpcLifecycle extends RuntimeRpcWebSocketDispatch {
     host: string
     port: number
     preferPinnedPort: boolean
+    requirePinnedPort?: boolean
     fallbackPort?: number
   }): Promise<{ transport: WebSocketTransport; endpoint: string }> {
     const deviceRegistry = this.deviceRegistry
@@ -185,6 +195,7 @@ export class RuntimeRpcLifecycle extends RuntimeRpcWebSocketDispatch {
       staticRoot: this.webClientRoot,
       ...(options.fallbackPort !== undefined ? { fallbackPort: options.fallbackPort } : {}),
       ...(options.preferPinnedPort ? { preferPinnedPort: true } : {}),
+      ...(options.requirePinnedPort ? { requirePinnedPort: true } : {}),
       fallbackLadder: wsFallbackPortLadder(this.wsPort)
     })
     const mobileSocketWiring = this.ensureMobileSocketWiring(deviceRegistry, e2eeKeypair)
@@ -232,7 +243,7 @@ export class RuntimeRpcLifecycle extends RuntimeRpcWebSocketDispatch {
             sendBinary,
             undefined,
             socket.ws,
-            socket.device.deviceToken,
+            socket.device.deviceToken ?? null,
             socket
           )
         )
@@ -258,12 +269,13 @@ export class RuntimeRpcLifecycle extends RuntimeRpcWebSocketDispatch {
           return
         }
         this.abortWebSocketDispatches(socket.ws)
+        this.mobileDesktopRelay?.closePhoneConnection(socket.connectionId)
         // Why: subscriptions and binary streams are socket-scoped, but disconnect state is device-scoped across transports.
         this.runtime.cleanupSubscriptionsForConnection(socket.connectionId)
         this.runtime.cancelMobileDictationForConnection(socket.connectionId)
         this.binaryMessageRouter.deleteConnection(socket.connectionId)
         if (!hasOtherConnections) {
-          this.runtime.onClientDisconnected(socket.device.deviceToken)
+          this.runtime.onClientDisconnected(socket.device.clientId)
         }
       },
       // Why: relay attempts are authorized upstream; only direct failures should prompt local re-pairing.

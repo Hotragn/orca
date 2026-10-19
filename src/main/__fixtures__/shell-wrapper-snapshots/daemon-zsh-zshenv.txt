@@ -227,7 +227,8 @@ __orca_deferred_init() {
       # Why: a WSL pane's pointer is relative to the guest home, which the host cannot know at spawn.
       case "$__orca_claude_pointer" in '~/'*) __orca_claude_pointer="${HOME:-}/${__orca_claude_pointer#??}" ;; esac
       __orca_claude_home="$(cat "$__orca_claude_pointer" 2>/dev/null || :)"
-      if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "$CLAUDE_CONFIG_DIR" != "${ORCA_CLAUDE_INJECTED_CONFIG_DIR:-}" ]; then
+      if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "$CLAUDE_CONFIG_DIR" != "${ORCA_CLAUDE_INJECTED_CONFIG_DIR:-}" ] &&
+        { [ -z "${ORCA_CLAUDE_USER_CONFIG_DIR:-}" ] || [ "${CLAUDE_CONFIG_DIR%/}" != "${ORCA_CLAUDE_USER_CONFIG_DIR%/}" ]; }; then
         command claude "$@"; return
       fi
       # Why: Orca's value replaced the user's own at spawn, so System default restores theirs.
@@ -276,14 +277,6 @@ __orca_deferred_init() {
   __orca_has_feature markers && __orca_osc133_precmd
   builtin unset _orca_shell_features _orca_histfile
   (( $+__orca_deferred_sched_armed )) || builtin unfunction __orca_deferred_sched_init
-  local __orca_widget __orca_line_init_bound=0
-  for __orca_widget in "${(v)widgets[@]}"; do
-    if [[ "$__orca_widget" == user:__orca_deferred_line_init ]]; then
-      __orca_line_init_bound=1
-      break
-    fi
-  done
-  (( __orca_line_init_bound )) || builtin unfunction __orca_deferred_line_init
   builtin unfunction __orca_deferred_init __orca_has_feature __orca_arm_deferred_line_init
 }
 {

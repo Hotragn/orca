@@ -1,5 +1,6 @@
 import {
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -17,7 +18,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { runProcess } from '@orca/process-host'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 const realPackageDir = resolve('src/packages/process-host')
 const buildScript = join(realPackageDir, 'scripts', 'build-dist.mjs')
@@ -26,6 +27,8 @@ const tsxCli = packageRequire.resolve('tsx/cli')
 const realCompilerDir = dirname(packageRequire.resolve('typescript/package.json'))
 const nodeExecutable = process.env.ORCA_TEST_NODE_EXECUTABLE ?? process.execPath
 const temporaryRoots = []
+let seededDist
+let releaseSeed
 
 afterEach(() => {
   for (const root of temporaryRoots.splice(0)) {
@@ -33,9 +36,15 @@ afterEach(() => {
   }
 })
 
-function fixture() {
-  const packageDir = realpathSync(mkdtempSync(join(tmpdir(), 'orca-process-host-build-')))
-  temporaryRoots.push(packageDir)
+function fixture(onTestFinished, distSeed) {
+  const root = mkdtempSync(join(tmpdir(), 'orca-process-host-build-'))
+  if (onTestFinished) {
+    onTestFinished(() => rmSync(root, { recursive: true, force: true }))
+  }
+  const packageDir = realpathSync(root)
+  if (!onTestFinished) {
+    temporaryRoots.push(packageDir)
+  }
   mkdirSync(join(packageDir, 'src'))
   mkdirSync(join(packageDir, 'node_modules'))
   symlinkSync(realCompilerDir, join(packageDir, 'node_modules', 'typescript'), 'junction')
@@ -45,6 +54,7 @@ function fixture() {
     JSON.stringify({
       compilerOptions: {
         target: 'ES2022',
+        lib: ['ES2022'],
         module: 'Node16',
         moduleResolution: 'Node16',
         rootDir: 'src',
@@ -60,6 +70,9 @@ function fixture() {
   )
   writeFileSync(join(packageDir, 'src', 'entry.ts'), "export { value } from './internal'\n")
   writeFileSync(join(packageDir, 'src', 'internal.ts'), 'export const value = 1\n')
+  if (distSeed) {
+    cpSync(distSeed, join(packageDir, 'dist'), { recursive: true, preserveTimestamps: true })
+  }
   return packageDir
 }
 
@@ -70,6 +83,26 @@ function runBuild(packageDir, { script = buildScript, cwd = realPackageDir } = {
 
 // Emits replacement output, then takes over or deletes the build lock as a competing build would.
 function installLockStealingCompiler(packageDir, { recreateLock }) {
+  const compromised = join(packageDir, 'lock-compromised')
+  const script = join(packageDir, 'observe-lock-loss.mjs')
+  writeFileSync(
+    script,
+    `import { writeFileSync } from 'node:fs'
+import lockfile from ${JSON.stringify(pathToFileURL(packageRequire.resolve('proper-lockfile')).href)}
+const lock = lockfile.lock
+lockfile.lock = (file, options) => lock(file, {
+  ...options,
+  update: 1000,
+  onCompromised(error) {
+    options.onCompromised(error)
+    writeFileSync(${JSON.stringify(compromised)}, '')
+  }
+})
+const { buildPackageDist } = await import(${JSON.stringify(pathToFileURL(buildScript).href)})
+try { await buildPackageDist(process.argv[2]) }
+catch (error) { console.error(error.message); process.exitCode = 1 }
+`
+  )
   const compilerDir = join(packageDir, 'node_modules', 'typescript')
   rmSync(compilerDir, { recursive: true })
   mkdirSync(join(compilerDir, 'bin'), { recursive: true })
@@ -79,7 +112,7 @@ function installLockStealingCompiler(packageDir, { recreateLock }) {
   )
   writeFileSync(
     join(compilerDir, 'bin', 'tsc'),
-    `const { mkdirSync, rmSync, utimesSync, writeFileSync } = require('node:fs')
+    `const { existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } = require('node:fs')
 const { join } = require('node:path')
 const outDir = process.argv[process.argv.indexOf('--outDir') + 1]
 mkdirSync(outDir, { recursive: true })
@@ -87,15 +120,19 @@ writeFileSync(join(outDir, 'entry.js'), 'module.exports = "from a build that los
 writeFileSync(join(outDir, 'added.js'), '')
 rmSync('.dist-build.lock', { recursive: true, force: true })
 ${recreateLock ? "mkdirSync('.dist-build.lock')\nconst foreignMtime = new Date(Date.now() + 60_000)\nutimesSync('.dist-build.lock', foreignMtime, foreignMtime)" : ''}
-// Hold compilation past proper-lockfile's 15-second refresh so compromise is observed.
-setTimeout(() => {}, 17_000)
+// Wait for the real lock monitor's verdict before compilation completes.
+const wait = setInterval(() => {
+  if (existsSync(${JSON.stringify(compromised)})) clearInterval(wait)
+}, 10)
+setTimeout(() => process.exit(2), 20_000).unref()
 `
   )
+  return script
 }
 
-async function build(packageDir) {
+async function build(packageDir, expectResult = expect) {
   const result = await runBuild(packageDir)
-  expect(result).toMatchObject({ code: 0, stderr: '' })
+  expectResult(result).toMatchObject({ code: 0, stderr: '' })
   return result
 }
 
@@ -115,10 +152,19 @@ function leftovers(packageDir) {
   return readdirSync(packageDir).filter((name) => name.startsWith('.dist-'))
 }
 
+beforeAll(async () => {
+  const packageDir = fixture((release) => {
+    releaseSeed = release
+  })
+  await build(packageDir)
+  seededDist = join(packageDir, 'dist')
+})
+
+afterAll(() => releaseSeed?.())
+
 describe('process-host dist build', () => {
   it('leaves an up-to-date dist untouched on repeated builds', async () => {
-    const packageDir = fixture()
-    await build(packageDir)
+    const packageDir = fixture(undefined, seededDist)
     const before = distSnapshot(packageDir)
 
     const repeated = await build(packageDir)
@@ -129,8 +175,7 @@ describe('process-host dist build', () => {
   })
 
   it('rewrites only changed outputs and keeps source maps pointing at src', async () => {
-    const packageDir = fixture()
-    await build(packageDir)
+    const packageDir = fixture(undefined, seededDist)
     const before = distSnapshot(packageDir)
 
     writeFileSync(join(packageDir, 'src', 'internal.ts'), 'export const value = 2\n')
@@ -147,8 +192,7 @@ describe('process-host dist build', () => {
   })
 
   it('removes outputs of renamed sources', async () => {
-    const packageDir = fixture()
-    await build(packageDir)
+    const packageDir = fixture(undefined, seededDist)
     renameSync(join(packageDir, 'src', 'internal.ts'), join(packageDir, 'src', 'renamed.ts'))
     writeFileSync(join(packageDir, 'src', 'entry.ts'), "export { value } from './renamed'\n")
 
@@ -167,8 +211,7 @@ describe('process-host dist build', () => {
   })
 
   it('preserves the previous dist when compilation fails', async () => {
-    const packageDir = fixture()
-    await build(packageDir)
+    const packageDir = fixture(undefined, seededDist)
     const before = distSnapshot(packageDir)
     writeFileSync(join(packageDir, 'src', 'internal.ts'), "export const value: number = 'bad'\n")
 
@@ -181,8 +224,7 @@ describe('process-host dist build', () => {
   })
 
   it('publishes new dependencies before replacing their importer and removes stale output last', async () => {
-    const packageDir = fixture()
-    await build(packageDir)
+    const packageDir = fixture(undefined, seededDist)
     renameSync(join(packageDir, 'src', 'internal.ts'), join(packageDir, 'src', 'z-new.ts'))
     writeFileSync(join(packageDir, 'src', 'z-new.ts'), 'export const value = 2\n')
     writeFileSync(join(packageDir, 'src', 'entry.ts'), "export { value } from './z-new'\n")
@@ -224,8 +266,7 @@ await buildPackageDist(process.argv[2])
   })
 
   it('keeps dist loadable while concurrent builds and a reader run', async () => {
-    const packageDir = fixture()
-    await build(packageDir)
+    const packageDir = fixture(undefined, seededDist)
     writeFileSync(
       join(packageDir, 'src', 'internal.ts'),
       `export const value = ${'2 + '.repeat(10_000)}2\n`
@@ -263,8 +304,7 @@ while (!existsSync(${JSON.stringify(finished)}) || reads === 0) {
   })
 
   it('serializes builds so a later source snapshot is the one published', async () => {
-    const packageDir = fixture()
-    await build(packageDir)
+    const packageDir = fixture(undefined, seededDist)
     // Hold the build lock while the source changes, as an in-flight earlier build would.
     mkdirSync(join(packageDir, '.dist-build.lock'))
     const waiting = runBuild(packageDir)
@@ -276,29 +316,30 @@ while (!existsSync(${JSON.stringify(finished)}) || reads === 0) {
     expect(readFileSync(join(packageDir, 'dist', 'internal.js'), 'utf8')).toContain('value = 9')
   })
 
-  it.each([
+  it.concurrent.for([
     ['taken over by another build', true],
     ['removed', false]
   ])(
     'fails without publishing when the held build lock is %s',
-    async (_label, recreateLock) => {
-      const packageDir = fixture()
-      await build(packageDir)
+    { timeout: 30_000 },
+    async ([_label, recreateLock], { expect: expectResult, onTestFinished }) => {
+      const packageDir = fixture(onTestFinished, seededDist)
       const before = distSnapshot(packageDir)
       const entry = readFileSync(join(packageDir, 'dist', 'entry.js'), 'utf8')
-      installLockStealingCompiler(packageDir, { recreateLock })
+      const script = installLockStealingCompiler(packageDir, { recreateLock })
 
-      const result = await runBuild(packageDir)
+      const result = await runBuild(packageDir, { script })
 
-      expect(result.code).toBe(1)
-      expect(result.stderr).toContain('build lock was compromised')
-      expect(distSnapshot(packageDir)).toEqual(before)
-      expect(readFileSync(join(packageDir, 'dist', 'entry.js'), 'utf8')).toBe(entry)
+      expectResult(result.code).toBe(1)
+      expectResult(result.stderr).toContain('build lock was compromised')
+      expectResult(distSnapshot(packageDir)).toEqual(before)
+      expectResult(readFileSync(join(packageDir, 'dist', 'entry.js'), 'utf8')).toBe(entry)
       // The other build's lock is left in place.
-      expect(existsSync(join(packageDir, '.dist-build.lock'))).toBe(recreateLock)
-      expect(leftovers(packageDir).filter((name) => name.startsWith('.dist-staging-'))).toEqual([])
-    },
-    30_000
+      expectResult(existsSync(join(packageDir, '.dist-build.lock'))).toBe(recreateLock)
+      expectResult(
+        leftovers(packageDir).filter((name) => name.startsWith('.dist-staging-'))
+      ).toEqual([])
+    }
   )
 
   it('reclaims staging directories abandoned by a killed build', async () => {

@@ -9,10 +9,8 @@ import {
 } from '../../../../shared/execution-host'
 import { parseWorkspaceKey } from '../../../../shared/workspace-scope'
 import { translate } from '@/i18n/i18n'
-import {
-  getExplicitRuntimeEnvironmentIdForWorktree,
-  getSettingsForWorktreeRuntimeOwner
-} from '@/lib/worktree-runtime-owner'
+import { runtimeEnvironmentIdForWorkspaceOwner } from '@/lib/resolve-owner'
+import type { RuntimeClientTarget } from '../../../../shared/runtime-client-target'
 import type { FileExplorerOperationOwner } from './file-explorer-types'
 import {
   getFloatingWorkspaceOperationRoute,
@@ -24,7 +22,7 @@ import { captureWorktreeOperationGenerationGuard } from '@/lib/worktree-operatio
 const ownerUnresolved = (): Error => new Error(getFileExplorerOwnerUnresolvedMessage())
 
 export type FileExplorerOperationRoute = {
-  settings: { activeRuntimeEnvironmentId: string | null }
+  target: RuntimeClientTarget
   connectionId?: string
   expectedExecutionHostId?: 'local' | `ssh:${string}`
   expectedSshTargetId?: string
@@ -75,20 +73,23 @@ export function getFileExplorerOperationOwnerFromState(
     }
   }
 
+  const explicitOwner = worktreeId
+    ? runtimeEnvironmentIdForWorkspaceOwner(state, { workspaceId: worktreeId })
+    : null
+  // Why: file writes and deletes must not pick one of two hosts that publish this workspace.
+  if (explicitOwner?.kind === 'ambiguous') {
+    return { kind: 'unresolved' }
+  }
   const connectionId = getConnectionIdFromState(state, worktreeId ?? null)
-  const explicitRuntimeEnvironmentId = getExplicitRuntimeEnvironmentIdForWorktree(state, worktreeId)
+  const explicitRuntimeEnvironmentId = explicitOwner?.environmentId ?? null
   // Why: global runtime focus is not ownership evidence while SSH/local
   // metadata is unresolved; destructive actions must wait for explicit provenance.
   if (connectionId === undefined && explicitRuntimeEnvironmentId === null) {
     return { kind: 'unresolved' }
   }
-  const settings = getSettingsForWorktreeRuntimeOwner(state, worktreeId)
-  // Why: inferred SSH ownership outranks global runtime focus, but an explicit
+  // Why: inferred SSH ownership outranks a projected runtime owner, but an explicit
   // workspace runtime still owns its files.
-  const runtimeEnvironmentId =
-    connectionId && explicitRuntimeEnvironmentId === null
-      ? null
-      : settings.activeRuntimeEnvironmentId?.trim()
+  const runtimeEnvironmentId = explicitRuntimeEnvironmentId?.trim()
   if (runtimeEnvironmentId) {
     return {
       kind: 'runtime',
@@ -114,19 +115,19 @@ export function getFileExplorerOperationRoute(
   switch (owner.kind) {
     case 'local':
       return {
-        settings: { activeRuntimeEnvironmentId: null },
+        target: { kind: 'local' },
         expectedExecutionHostId: 'local'
       }
     case 'ssh':
       return {
-        settings: { activeRuntimeEnvironmentId: null },
+        target: { kind: 'local' },
         connectionId: owner.connectionId,
         expectedExecutionHostId: toSshExecutionHostId(owner.connectionId)
       }
     case 'runtime': {
       const host = parseExecutionHostId(owner.executionHostId)
       return {
-        settings: { activeRuntimeEnvironmentId: owner.environmentId },
+        target: { kind: 'environment', environmentId: owner.environmentId },
         ...(host?.kind === 'ssh'
           ? { expectedExecutionHostId: host.id }
           : { expectedExecutionHostId: 'local' as const })
