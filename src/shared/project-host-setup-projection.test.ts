@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  getProjectProviderIdentity,
   projectHostSetupProjectionFromRepos,
   getProjectHostSetupsForProject,
   isGitHubBackedRepo,
@@ -536,6 +537,21 @@ describe('project host setup projection', () => {
       hostId: 'ssh:openclaw%202',
       projectHostSetupId: 'remote-repo'
     })
+  })
+})
+
+describe('getProjectProviderIdentity from a remote URL', () => {
+  // Why: GitHub's SSH certificate authorities hand out org-<id>@github.com remotes instead of git@.
+  it('reads an SCP remote whose SSH user is not git', () => {
+    expect(
+      getProjectProviderIdentity({
+        gitRemoteIdentity: {
+          canonicalKey: 'github.com/acme/app',
+          remoteName: 'origin',
+          remoteUrl: 'org-123456@github.com:Acme/app.git'
+        }
+      })
+    ).toMatchObject({ provider: 'github', owner: 'Acme', repo: 'app' })
   })
 })
 

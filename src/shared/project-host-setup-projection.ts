@@ -197,7 +197,8 @@ function parseGitHubRemoteUrl(remoteUrl: string | undefined): ProjectProviderIde
   if (!trimmed) {
     return null
   }
-  const sshMatch = trimmed.match(/^git@([^:]+):([^/]+)\/([^/]+?)(?:\.git)?$/i)
+  // Why any user: GitHub's SSH certificate authorities hand out org-<id>@github.com remotes.
+  const sshMatch = trimmed.match(/^[^@/:\s]+@([^:/\s]+):([^/]+)\/([^/]+?)(?:\.git)?$/i)
   if (sshMatch?.[1] && sshMatch[2] && sshMatch[3]) {
     return projectProviderIdentity(sshMatch[1], sshMatch[2], sshMatch[3])
   }

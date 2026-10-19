@@ -26,6 +26,28 @@ describe('parseGitHubRemoteIdentity', () => {
     })
   })
 
+  // Why: GitHub's SSH certificate authorities hand out org-<id>@github.com remotes instead of git@.
+  it('parses an SCP remote whose SSH user is not git', () => {
+    expect(parseGitHubRemoteIdentity('org-123456@github.com:Acme/app.git')).toEqual({
+      host: 'github.com',
+      owner: 'Acme',
+      repo: 'app'
+    })
+    expect(parseGitHubOwnerRepo('org-123456@github.com:Acme/app.git')).toEqual({
+      owner: 'Acme',
+      repo: 'app'
+    })
+    expect(remoteUrlUsesSshTransport('org-123456@github-work:Acme/app.git')).toBe(true)
+    expect(gitHubSshConfigHostAlias('org-123456@github-work:Acme/app.git')).toBe('github-work')
+  })
+
+  it('keeps URL remotes that carry a user out of the SCP form', () => {
+    expect(parseGitHubRemoteIdentity('https://me@github.com/Acme/app.git')?.host).toBe('github.com')
+    expect(parseGitHubRemoteIdentity('ssh://deploy@ghe.acme.com:2222/Acme/app.git')?.host).toBe(
+      'ghe.acme.com'
+    )
+  })
+
   it('preserves a custom port on a GHES https remote', () => {
     // The port IS the Enterprise web/API endpoint, so gh must target
     // ghe.acme.com:8443, not the portless hostname.
