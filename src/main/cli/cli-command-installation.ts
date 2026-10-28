@@ -23,7 +23,7 @@ import {
 import { DEV_LAUNCHER_DIR, LEGACY_LINUX_COMMAND_NAME } from './cli-install-constants'
 import { buildWindowsForwarder } from './cli-dev-launcher'
 import { isPermissionError } from '../win32-utils'
-import { isPathInsideOrEqual } from './cli-install-path-format'
+import { isPathInsideOrEqual, samePathEntry } from './cli-install-path-format'
 
 export class CliCommandInstallation extends CliCommandInspection {
   protected async installSymlink(status: CliInstallStatus): Promise<void> {
@@ -31,6 +31,9 @@ export class CliCommandInstallation extends CliCommandInspection {
     const launcherPath = status.launcherPath
     if (!commandPath || !launcherPath || status.state === 'installed') {
       return
+    }
+    if (samePathEntry(this.platform, commandPath, launcherPath)) {
+      throw new Error(`Refusing to register ${commandPath} as a link to itself.`)
     }
 
     const inspected = await this.inspectStableSymlink(commandPath, launcherPath)

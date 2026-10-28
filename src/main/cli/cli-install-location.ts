@@ -177,6 +177,10 @@ export abstract class CliInstallLocation {
       const isDefaultCommandPath = samePathEntry(this.platform, commandPath, defaultCommandPath)
       reachedDefaultCommandPath ||= isDefaultCommandPath
 
+      // The bundled bin dir is on PATH in Orca's terminals; its launcher is the target, never a command slot.
+      if (samePathEntry(this.platform, commandPath, launcherPath)) {
+        continue
+      }
       if (!(await isExecutableFile(commandPath))) {
         continue
       }
