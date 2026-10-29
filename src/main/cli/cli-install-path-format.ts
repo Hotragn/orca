@@ -1,5 +1,5 @@
 import { constants } from 'node:fs'
-import { access, lstat, stat } from 'node:fs/promises'
+import { access, lstat, readdir, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, relative } from 'node:path'
 import { expandWindowsEnvironmentVariables } from '../../shared/windows-environment-expansion'
 
@@ -54,13 +54,25 @@ export async function isSameDirectoryEntry(left: string, right: string): Promise
       stat(dirname(left), { bigint: true }),
       stat(dirname(right), { bigint: true })
     ])
-    // Parent identity and entry name keep any other hard link to the launcher replaceable.
+    // Parent identity keeps a hard link in another directory replaceable.
+    if (
+      leftEntry.dev !== rightEntry.dev ||
+      leftEntry.ino !== rightEntry.ino ||
+      leftParent.dev !== rightParent.dev ||
+      leftParent.ino !== rightParent.ino
+    ) {
+      return false
+    }
+    const leftName = basename(left)
+    const rightName = basename(right)
+    if (leftName === rightName) {
+      return true
+    }
+    // Names differing only by case alias one entry unless both are listed (separate hard links).
+    const entries = await readdir(dirname(left))
     return (
-      basename(left).toLowerCase() === basename(right).toLowerCase() &&
-      leftEntry.dev === rightEntry.dev &&
-      leftEntry.ino === rightEntry.ino &&
-      leftParent.dev === rightParent.dev &&
-      leftParent.ino === rightParent.ino
+      leftName.toLowerCase() === rightName.toLowerCase() &&
+      !(entries.includes(leftName) && entries.includes(rightName))
     )
   } catch {
     return false
