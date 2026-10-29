@@ -359,10 +359,12 @@ describe('CliInstaller', () => {
       await expectLauncherIntact()
     })
 
-    it('still replaces a differently named hard link beside the launcher', async () => {
-      const { bundledBin, installerOptions, expectLauncherIntact } =
+    it('still replaces a hard link to the launcher in another directory', async () => {
+      const { root, bundledBin, installerOptions, expectLauncherIntact } =
         await makeBundledLauncherFixture()
-      const hardLink = join(bundledBin, 'orca-cli')
+      const usrLocalBin = join(root, 'usr', 'local', 'bin')
+      await mkdir(usrLocalBin, { recursive: true })
+      const hardLink = join(usrLocalBin, 'orca')
       await link(join(bundledBin, 'orca'), hardLink)
 
       const status = await new CliInstaller({

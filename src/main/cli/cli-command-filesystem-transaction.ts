@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { lstat, mkdir, readFile, readlink, rename, rmdir } from 'node:fs/promises'
+import { lstat, mkdir, readFile, readlink, rename, rmdir, stat } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import type { CliInstallStatus } from '../../shared/cli-install-types'
 import { isPermissionError } from '../win32-utils'
@@ -54,6 +54,27 @@ export function hasSameIdentity(left: EntryIdentity | null, right: EntryIdentity
   return (
     left === right ||
     (left !== null && right !== null && left.dev === right.dev && left.ino === right.ino)
+  )
+}
+
+/** Whether both paths name one directory entry, even through aliased or differently cased parents. */
+export async function isSameDirectoryEntry(left: string, right: string): Promise<boolean> {
+  const [leftEntry, rightEntry] = await Promise.all([
+    readEntrySnapshot(left),
+    readEntrySnapshot(right)
+  ])
+  if (!leftEntry || !rightEntry || !hasSameIdentity(leftEntry.identity, rightEntry.identity)) {
+    return false
+  }
+  // Parent identity keeps a hard link to the launcher in another directory replaceable.
+  const [leftParent, rightParent] = await Promise.all([
+    stat(dirname(left), { bigint: true }),
+    stat(dirname(right), { bigint: true })
+  ])
+  return (
+    leftParent.dev === rightParent.dev &&
+    leftParent.ino === rightParent.ino &&
+    basename(left).toLowerCase() === basename(right).toLowerCase()
   )
 }
 

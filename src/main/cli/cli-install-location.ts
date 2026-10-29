@@ -19,12 +19,12 @@ import { ensureDevLauncher } from './cli-dev-launcher'
 import type { CliInstallerOptions, InstallSpec } from './cli-installer-contracts'
 import {
   isExecutableFile,
-  isSameDirectoryEntry,
   samePathEntry,
   splitPathEntries,
   uniquePathEntries
 } from './cli-install-path-format'
 import { runMacPrivilegedCommand, writeWindowsUserPath } from './cli-privileged-processes'
+import { isSameDirectoryEntry } from './cli-command-filesystem-transaction'
 import {
   invalidateWindowsUserPathRegistryCache,
   readFreshWindowsUserPathRegistry,
@@ -181,7 +181,7 @@ export abstract class CliInstallLocation {
       if (!(await isExecutableFile(commandPath))) {
         continue
       }
-      // Orca terminals put the launcher's own dir on PATH; the link target can never be the command slot.
+      // Orca terminals put the launcher's own dir first on PATH.
       if (await isSameDirectoryEntry(commandPath, launcherPath)) {
         continue
       }
