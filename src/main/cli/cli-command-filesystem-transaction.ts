@@ -57,18 +57,6 @@ export function hasSameIdentity(left: EntryIdentity | null, right: EntryIdentity
   )
 }
 
-export async function isSameEntry(left: string, right: string): Promise<boolean> {
-  const [leftEntry, rightEntry] = await Promise.all([
-    readEntrySnapshot(left),
-    readEntrySnapshot(right)
-  ])
-  return (
-    leftEntry !== null &&
-    rightEntry !== null &&
-    hasSameIdentity(leftEntry.identity, rightEntry.identity)
-  )
-}
-
 export function hasSameSnapshot(left: EntrySnapshot | null, right: EntrySnapshot | null): boolean {
   return (
     left === right ||
