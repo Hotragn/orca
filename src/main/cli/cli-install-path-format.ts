@@ -1,6 +1,6 @@
 import { constants } from 'node:fs'
 import { access, lstat, stat } from 'node:fs/promises'
-import { dirname, isAbsolute, relative } from 'node:path'
+import { basename, dirname, isAbsolute, relative } from 'node:path'
 import { expandWindowsEnvironmentVariables } from '../../shared/windows-environment-expansion'
 
 export function splitPathEntries(platform: NodeJS.Platform, value: string | null): string[] {
@@ -54,8 +54,9 @@ export async function isSameDirectoryEntry(left: string, right: string): Promise
       stat(dirname(left), { bigint: true }),
       stat(dirname(right), { bigint: true })
     ])
-    // Parent identity keeps a hard link in another directory replaceable.
+    // Parent identity and entry name keep any other hard link to the launcher replaceable.
     return (
+      basename(left).toLowerCase() === basename(right).toLowerCase() &&
       leftEntry.dev === rightEntry.dev &&
       leftEntry.ino === rightEntry.ino &&
       leftParent.dev === rightParent.dev &&
