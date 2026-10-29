@@ -19,6 +19,7 @@ import { ensureDevLauncher } from './cli-dev-launcher'
 import type { CliInstallerOptions, InstallSpec } from './cli-installer-contracts'
 import {
   isExecutableFile,
+  isSameDirectoryEntry,
   samePathEntry,
   splitPathEntries,
   uniquePathEntries
@@ -177,11 +178,11 @@ export abstract class CliInstallLocation {
       const isDefaultCommandPath = samePathEntry(this.platform, commandPath, defaultCommandPath)
       reachedDefaultCommandPath ||= isDefaultCommandPath
 
-      // The bundled bin dir is on PATH in Orca's terminals; its launcher is the target, never a command slot.
-      if (samePathEntry(this.platform, commandPath, launcherPath)) {
+      if (!(await isExecutableFile(commandPath))) {
         continue
       }
-      if (!(await isExecutableFile(commandPath))) {
+      // Orca terminals put the launcher's own dir on PATH; the link target can never be the command slot.
+      if (await isSameDirectoryEntry(commandPath, launcherPath)) {
         continue
       }
 

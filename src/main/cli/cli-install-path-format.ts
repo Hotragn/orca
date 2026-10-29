@@ -1,6 +1,6 @@
 import { constants } from 'node:fs'
-import { access, stat } from 'node:fs/promises'
-import { isAbsolute, relative } from 'node:path'
+import { access, lstat, stat } from 'node:fs/promises'
+import { dirname, isAbsolute, relative } from 'node:path'
 import { expandWindowsEnvironmentVariables } from '../../shared/windows-environment-expansion'
 
 export function splitPathEntries(platform: NodeJS.Platform, value: string | null): string[] {
@@ -43,6 +43,27 @@ export function samePathEntry(
 export function isPathInsideOrEqual(parentPath: string, childPath: string): boolean {
   const childRelative = relative(parentPath, childPath)
   return childRelative === '' || (!childRelative.startsWith('..') && !isAbsolute(childRelative))
+}
+
+/** Whether both paths name one directory entry, including through aliased or differently cased parents. */
+export async function isSameDirectoryEntry(left: string, right: string): Promise<boolean> {
+  try {
+    const [leftEntry, rightEntry, leftParent, rightParent] = await Promise.all([
+      lstat(left, { bigint: true }),
+      lstat(right, { bigint: true }),
+      stat(dirname(left), { bigint: true }),
+      stat(dirname(right), { bigint: true })
+    ])
+    // Parent identity keeps a hard link in another directory replaceable.
+    return (
+      leftEntry.dev === rightEntry.dev &&
+      leftEntry.ino === rightEntry.ino &&
+      leftParent.dev === rightParent.dev &&
+      leftParent.ino === rightParent.ino
+    )
+  } catch {
+    return false
+  }
 }
 
 export async function isExecutableFile(commandPath: string): Promise<boolean> {
