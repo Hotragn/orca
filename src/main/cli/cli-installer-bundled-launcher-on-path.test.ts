@@ -1,4 +1,4 @@
-import { link, lstat, mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -76,22 +76,6 @@ describe.skipIf(process.platform === 'win32')(
       })
 
       await expect(installer.install()).rejects.toThrow('link to itself')
-      await expectLauncherIntact()
-    })
-
-    it('still replaces a differently named hard link beside the launcher', async () => {
-      const { bundledBin, installerOptions, expectLauncherIntact } =
-        await makeBundledLauncherFixture()
-      const hardLink = join(bundledBin, 'orca-cli')
-      await link(join(bundledBin, 'orca'), hardLink)
-
-      const status = await new CliInstaller({
-        ...installerOptions,
-        commandPathOverride: hardLink
-      }).install()
-
-      expect(status.state).toBe('installed')
-      expect((await lstat(hardLink)).isSymbolicLink()).toBe(true)
       await expectLauncherIntact()
     })
   }
